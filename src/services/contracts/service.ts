@@ -1,6 +1,6 @@
 import { prisma } from '../../config/database';
 import { logger } from '../../config/logger';
-import { v4 as uuid } from 'uuid';
+import crypto from 'crypto';
 
 class ContractService {
   async generate(applicationId: string): Promise<{
@@ -54,25 +54,27 @@ class ContractService {
       generatedAt: new Date().toISOString(),
     };
 
-    const contract = await prisma.contract.create({
-      data: {
-        applicationId,
-        contractNumber,
-        terms: JSON.parse(JSON.stringify(terms)),
-        status: 'SENT',
-      },
-    });
+    const contract = await prisma.$transaction(async (tx) => {
+      const created = await tx.contract.create({
+        data: {
+          applicationId,
+          contractNumber,
+          terms: JSON.parse(JSON.stringify(terms)),
+          status: 'SENT',
+        },
+      });
 
-    // Update application status
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: { status: 'CONTRACT_PENDING' },
-    });
+      await tx.application.update({
+        where: { id: applicationId },
+        data: { status: 'CONTRACT_PENDING' },
+      });
 
-    // Update lead stage
-    await prisma.lead.update({
-      where: { id: application.leadId },
-      data: { stage: 'CONTRACT_SENT' },
+      await tx.lead.update({
+        where: { id: application.leadId },
+        data: { stage: 'CONTRACT_SENT' },
+      });
+
+      return created;
     });
 
     logger.info(
@@ -102,26 +104,26 @@ class ContractService {
       return { success: false, message: 'Contrato não encontrado.' };
     }
 
-    await prisma.contract.update({
-      where: { id: contractId },
-      data: {
-        status: 'SIGNED',
-        signedAt: new Date(),
-        signatureHash,
-        signatureIp,
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      await tx.contract.update({
+        where: { id: contractId },
+        data: {
+          status: 'SIGNED',
+          signedAt: new Date(),
+          signatureHash,
+          signatureIp,
+        },
+      });
 
-    // Update application
-    await prisma.application.update({
-      where: { id: contract.applicationId },
-      data: { status: 'DISBURSEMENT_PENDING' },
-    });
+      await tx.application.update({
+        where: { id: contract.applicationId },
+        data: { status: 'DISBURSEMENT_PENDING' },
+      });
 
-    // Update lead
-    await prisma.lead.update({
-      where: { id: contract.application.leadId },
-      data: { stage: 'CONTRACT_SIGNED' },
+      await tx.lead.update({
+        where: { id: contract.application.leadId },
+        data: { stage: 'CONTRACT_SIGNED' },
+      });
     });
 
     logger.info({ contractId }, 'Contract signed');
@@ -131,7 +133,7 @@ class ContractService {
 
   private generateContractNumber(): string {
     const year = new Date().getFullYear();
-    const seq = uuid().slice(0, 8).toUpperCase();
+    const seq = crypto.randomBytes(6).toString('hex').toUpperCase();
     return `ZW-${year}-${seq}`;
   }
 

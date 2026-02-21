@@ -61,7 +61,7 @@ dashboardRouter.get('/stats', async (_req: Request, res: Response) => {
 
 // Recent activity feed
 dashboardRouter.get('/activity', async (req: Request, res: Response) => {
-  const limit = parseInt(req.query.limit as string) || 20;
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
 
   const recentMessages = await prisma.message.findMany({
     include: {

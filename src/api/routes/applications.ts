@@ -1,13 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
+import { parsePagination, paginationMeta } from '../../utils/pagination';
 
 export const applicationsRouter = Router();
 
 // List applications with filters
 applicationsRouter.get('/', async (req: Request, res: Response) => {
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 20;
+  const { page, limit, skip } = parsePagination(req.query as { page?: string; limit?: string });
   const status = req.query.status as string | undefined;
 
   const where: Prisma.ApplicationWhereInput = {};
@@ -17,12 +17,12 @@ applicationsRouter.get('/', async (req: Request, res: Response) => {
     prisma.application.findMany({
       where,
       include: {
-        lead: { select: { name: true, phone: true, cpf: true } },
+        lead: { select: { name: true, phone: true } },
         creditAnalysis: true,
         contract: true,
       },
       orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * limit,
+      skip,
       take: limit,
     }),
     prisma.application.count({ where }),
@@ -30,7 +30,7 @@ applicationsRouter.get('/', async (req: Request, res: Response) => {
 
   res.json({
     data: applications,
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    pagination: paginationMeta(page, limit, total),
   });
 });
 
@@ -62,20 +62,24 @@ applicationsRouter.patch('/:id/decision', async (req: Request, res: Response) =>
     return;
   }
 
-  const application = await prisma.application.update({
-    where: { id: req.params.id as string },
-    data: {
-      status: decision,
-      denialReason: decision === 'DENIED' ? reason : null,
-    },
-    include: { lead: true },
+  // Use transaction to update both atomically
+  const result = await prisma.$transaction(async (tx) => {
+    const application = await tx.application.update({
+      where: { id: req.params.id as string },
+      data: {
+        status: decision,
+        denialReason: decision === 'DENIED' ? reason : null,
+      },
+      include: { lead: true },
+    });
+
+    await tx.lead.update({
+      where: { id: application.leadId },
+      data: { stage: decision === 'APPROVED' ? 'APPROVED' : 'DENIED' },
+    });
+
+    return application;
   });
 
-  // Update lead stage
-  await prisma.lead.update({
-    where: { id: application.leadId },
-    data: { stage: decision === 'APPROVED' ? 'APPROVED' : 'DENIED' },
-  });
-
-  res.json(application);
+  res.json(result);
 });

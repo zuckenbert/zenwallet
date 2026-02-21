@@ -86,39 +86,42 @@ class CreditAnalyzer {
       monthlyIncome,
     );
 
-    // 4. Save analysis
-    const analysis = await prisma.creditAnalysis.create({
-      data: {
-        applicationId,
-        creditScore: bureauResult.score,
-        scoreProvider: this.provider.name,
-        fraudRisk: bureauResult.fraudRisk,
-        incomeVerified: monthlyIncome > 0,
-        debtToIncome,
-        existingDebts: bureauResult.existingDebts,
-        decision: decision as CreditDecision,
-        decisionReason: reason,
-        rawResponse: JSON.parse(JSON.stringify(bureauResult)),
-        analyzedAt: new Date(),
-      },
-    });
-
-    // 5. Update application status
+    // 4. Save analysis + update application + lead in a transaction
     const newStatus = decision === 'APPROVED' ? 'APPROVED' : decision === 'DENIED' ? 'DENIED' : 'UNDER_REVIEW';
-    await prisma.application.update({
-      where: { id: applicationId },
-      data: {
-        status: newStatus,
-        approvedAmount: maxApprovedAmount,
-        denialReason: decision === 'DENIED' ? reason : null,
-      },
-    });
-
-    // 6. Update lead stage
     const newStage = decision === 'APPROVED' ? 'APPROVED' : decision === 'DENIED' ? 'DENIED' : 'ANALYZING';
-    await prisma.lead.update({
-      where: { phone },
-      data: { stage: newStage },
+
+    const analysis = await prisma.$transaction(async (tx) => {
+      const created = await tx.creditAnalysis.create({
+        data: {
+          applicationId,
+          creditScore: bureauResult.score,
+          scoreProvider: this.provider.name,
+          fraudRisk: bureauResult.fraudRisk,
+          incomeVerified: monthlyIncome > 0,
+          debtToIncome,
+          existingDebts: bureauResult.existingDebts,
+          decision: decision as CreditDecision,
+          decisionReason: reason,
+          rawResponse: JSON.parse(JSON.stringify(bureauResult)),
+          analyzedAt: new Date(),
+        },
+      });
+
+      await tx.application.update({
+        where: { id: applicationId },
+        data: {
+          status: newStatus,
+          approvedAmount: maxApprovedAmount,
+          denialReason: decision === 'DENIED' ? reason : null,
+        },
+      });
+
+      await tx.lead.update({
+        where: { phone },
+        data: { stage: newStage },
+      });
+
+      return created;
     });
 
     logger.info(

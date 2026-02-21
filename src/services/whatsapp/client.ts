@@ -43,29 +43,49 @@ export class WhatsAppClient {
     this.instance = env.EVOLUTION_INSTANCE_NAME;
   }
 
-  private async request(endpoint: string, body: unknown): Promise<unknown> {
+  private async request(endpoint: string, body: unknown, retries = 3): Promise<unknown> {
     const url = `${this.baseUrl}/${endpoint}/${this.instance}`;
-    
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: this.apiKey,
-        },
-        body: JSON.stringify(body),
-      });
+    let lastError: Error | undefined;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Evolution API error ${response.status}: ${errorText}`);
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.apiKey,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const status = response.status;
+          // Don't retry client errors (4xx) except 429
+          if (status >= 400 && status < 500 && status !== 429) {
+            throw new Error(`Evolution API error ${status}: ${errorText}`);
+          }
+          throw new Error(`Evolution API error ${status}: ${errorText}`);
+        }
+
+        return response.json();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const isClientError = lastError.message.includes('Evolution API error 4') &&
+          !lastError.message.includes('Evolution API error 429');
+
+        if (isClientError || attempt >= retries) {
+          logger.error({ error: lastError, endpoint, attempt }, 'WhatsApp API request failed');
+          throw lastError;
+        }
+
+        const backoffMs = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+        logger.warn({ endpoint, attempt, backoffMs }, 'WhatsApp API request failed, retrying');
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
-
-      return response.json();
-    } catch (error) {
-      logger.error({ error, endpoint }, 'WhatsApp API request failed');
-      throw error;
     }
+
+    throw lastError;
   }
 
   async sendText({ to, text }: SendMessageOptions): Promise<unknown> {

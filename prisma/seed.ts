@@ -12,7 +12,7 @@ async function main() {
     create: {
       phone: '5511999990000',
       name: 'João Teste',
-      cpf: '12345678901',
+      cpf: '52998224725',
       email: 'joao@teste.com',
       birthDate: new Date('1990-05-15'),
       monthlyIncome: 8000,

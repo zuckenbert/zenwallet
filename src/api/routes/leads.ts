@@ -2,15 +2,16 @@ import { Router, Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { z } from 'zod';
+import { parsePagination, paginationMeta } from '../../utils/pagination';
+import { sanitizeInput } from '../../utils/validation';
 
 export const leadsRouter = Router();
 
 // List leads with pagination and filters
 leadsRouter.get('/', async (req: Request, res: Response) => {
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 20;
+  const { page, limit, skip } = parsePagination(req.query as { page?: string; limit?: string });
   const stage = req.query.stage as string | undefined;
-  const search = req.query.search as string | undefined;
+  const search = req.query.search ? sanitizeInput(req.query.search as string, 100) : undefined;
 
   const where: Prisma.LeadWhereInput = {};
   if (stage) where.stage = stage as Prisma.EnumLeadStageFilter;
@@ -30,7 +31,7 @@ leadsRouter.get('/', async (req: Request, res: Response) => {
         _count: { select: { documents: true, conversations: true } },
       },
       orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * limit,
+      skip,
       take: limit,
     }),
     prisma.lead.count({ where }),
@@ -38,12 +39,7 @@ leadsRouter.get('/', async (req: Request, res: Response) => {
 
   res.json({
     data: leads,
-    pagination: {
-      page,
-      limit,
-      total,
-      pages: Math.ceil(total / limit),
-    },
+    pagination: paginationMeta(page, limit, total),
   });
 });
 

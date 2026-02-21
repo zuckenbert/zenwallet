@@ -1,14 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../config/database';
 import { contractService } from '../../services/contracts/service';
+import { parsePagination, paginationMeta } from '../../utils/pagination';
 import crypto from 'crypto';
 
 export const contractsRouter = Router();
 
 // List contracts
 contractsRouter.get('/', async (req: Request, res: Response) => {
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 20;
+  const { page, limit, skip } = parsePagination(req.query as Record<string, string>);
 
   const [contracts, total] = await Promise.all([
     prisma.contract.findMany({
@@ -18,7 +18,7 @@ contractsRouter.get('/', async (req: Request, res: Response) => {
         },
       },
       orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * limit,
+      skip,
       take: limit,
     }),
     prisma.contract.count(),
@@ -26,7 +26,7 @@ contractsRouter.get('/', async (req: Request, res: Response) => {
 
   res.json({
     data: contracts,
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    pagination: paginationMeta(page, limit, total),
   });
 });
 
