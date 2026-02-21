@@ -4,14 +4,22 @@ import crypto from 'crypto';
 
 interface QITechDebtResponse {
   data: {
-    key: string;
-    status: string;
-    borrower: Record<string, unknown>;
-    disbursement_accounts: Array<Record<string, unknown>>;
-    financial: Record<string, unknown>;
+    debt_key: string;
+    credit_operation_status: string;
+    contract?: {
+      contract_number: string;
+      contract_url: string;
+      signature_url: string;
+    };
+    installments?: Array<{
+      due_date: string;
+      total_amount: number;
+      principal_amount: number;
+      interest_amount: number;
+    }>;
+    annual_cet?: number;
+    disbursed_issue_amount?: number;
   };
-  event_datetime: string;
-  webhook_type: string;
 }
 
 export interface DisbursementRequest {
@@ -21,6 +29,16 @@ export interface DisbursementRequest {
   borrowerEmail: string;
   borrowerBirthDate: string;
   borrowerMotherName?: string;
+  borrowerNationality?: string;
+  borrowerAddress?: {
+    street: string;
+    number: string;
+    complement?: string;
+    neighborhood: string;
+    city: string;
+    state: string;
+    postalCode: string;
+  };
   amount: number;
   installments: number;
   interestRateMonthly: number;
@@ -51,25 +69,30 @@ export interface QITechWebhookPayload {
 /**
  * QI Tech API Integration - Funding & Disbursement
  *
- * Docs: https://documentation.qitech.com.br
+ * Docs: https://docs.qitech.com.br
  *
- * Auth: JWT signed with client private key (JWS - JSON Web Signature)
- * Base URL: https://api.qitech.app (production)
+ * Auth: ECDSA ES512 (P-521 curve) signed JWTs
+ *   - All request bodies are JWT-encoded: {"encoded_body": "<JWT>"}
+ *   - Authorization header: "QIT {client_key}:{auth_jwt}"
+ *   - Both requests AND responses are signed
+ *
+ * Key generation:
+ *   ssh-keygen -t ecdsa -b 521 -m PEM -f qitech.key
+ *   openssl ec -in qitech.key -pubout -outform PEM -out qitech.key.pub
+ *
+ * Base URL: https://api-auth.qitech.app (production)
  * Sandbox: https://api-auth.sandbox.qitech.app
  *
- * QI Tech provides the full credit infrastructure:
- * - Debt operation creation (formalizes the loan with BACEN)
- * - PIX disbursement (sends money to borrower)
- * - Collection management (generates payment slips / boletos)
- * - Webhook notifications for all status changes
+ * Flow: Upload docs → Create debt (CCB) → QI Tech signs → PIX disbursement
  *
  * To get started:
  * 1. Contact QI Tech (qitech.com.br) for API access
- * 2. They provide: client_key + private_key (PEM)
- * 3. Set QITECH_CLIENT_KEY=<your-client-key>
- * 4. Set QITECH_PRIVATE_KEY=<base64-encoded-PEM-private-key>
- * 5. Set QITECH_ENABLED=true
- * 6. For production: QITECH_API_URL=https://api.qitech.app
+ * 2. Generate ECDSA P-521 key pair, upload public key to QI Tech dashboard
+ * 3. They provide: API-CLIENT-KEY (UUID) + QI Tech's public key
+ * 4. Set QITECH_CLIENT_KEY=<your-uuid>
+ * 5. Set QITECH_PRIVATE_KEY=<base64-encoded-PEM-private-key>
+ * 6. Set QITECH_ENABLED=true
+ * 7. For production: QITECH_API_URL=https://api-auth.qitech.app
  */
 export class QITechProvider {
   private baseUrl: string;
@@ -89,8 +112,10 @@ export class QITechProvider {
    * This is the main flow:
    * 1. Creates the debt operation with QI Tech (formalizes with BACEN/CIP)
    * 2. QI Tech handles the regulatory registration
-   * 3. On approval, triggers PIX disbursement to borrower
+   * 3. After contract signature, triggers PIX disbursement to borrower
    * 4. Sends webhook notifications on status changes
+   *
+   * Status lifecycle: waiting_signature → signature_received → disbursing → disbursed
    */
   async createDebtAndDisburse(params: DisbursementRequest): Promise<DisbursementResult> {
     try {
@@ -101,8 +126,8 @@ export class QITechProvider {
 
       logger.info(
         {
-          operationKey: data.data?.key,
-          status: data.data?.status,
+          operationKey: data.data?.debt_key,
+          status: data.data?.credit_operation_status,
           borrowerCpf: `***${params.borrowerCpf.slice(-4)}`,
           amount: params.amount,
         },
@@ -111,9 +136,9 @@ export class QITechProvider {
 
       return {
         success: true,
-        operationKey: data.data?.key,
-        status: data.data?.status,
-        message: 'Operação de crédito criada. Aguardando aprovação para desembolso.',
+        operationKey: data.data?.debt_key,
+        status: data.data?.credit_operation_status,
+        message: 'Operação de crédito criada. Aguardando assinatura para desembolso.',
         rawResponse: data as unknown as Record<string, unknown>,
       };
     } catch (error) {
@@ -128,19 +153,59 @@ export class QITechProvider {
   }
 
   /**
+   * Simulate a debt operation (preview payment plan without creating)
+   */
+  async simulateDebt(params: DisbursementRequest): Promise<{
+    success: boolean;
+    installments?: Array<{ dueDate: string; amount: number }>;
+    annualCet?: number;
+    message: string;
+  }> {
+    try {
+      const payload = this.buildDebtPayload(params);
+      const response = await this.signedRequest('POST', '/debt_simulation', payload);
+      const data = response as QITechDebtResponse;
+
+      return {
+        success: true,
+        installments: data.data?.installments?.map((i) => ({
+          dueDate: i.due_date,
+          amount: i.total_amount,
+        })),
+        annualCet: data.data?.annual_cet,
+        message: 'Simulação realizada.',
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      return { success: false, message: `Erro na simulação: ${errorMsg}` };
+    }
+  }
+
+  /**
+   * Submit a signed contract PDF (when partner manages signature externally)
+   */
+  async submitSignedContract(debtKey: string, signedPdfUrl: string): Promise<void> {
+    await this.signedRequest('POST', `/debt/${debtKey}/signed`, {
+      type: 'pdf-signature',
+      'path-pdf-signed': signedPdfUrl,
+    });
+    logger.info({ debtKey }, 'Signed contract submitted to QI Tech');
+  }
+
+  /**
    * Get the status of a debt operation
    */
   async getDebtStatus(operationKey: string): Promise<{
     status: string;
-    disbursementStatus?: string;
+    contractUrl?: string;
     rawResponse: Record<string, unknown>;
   }> {
     const response = await this.signedRequest('GET', `/debt/${operationKey}`);
     const data = response as QITechDebtResponse;
 
     return {
-      status: data.data?.status,
-      disbursementStatus: (data.data?.disbursement_accounts?.[0] as Record<string, unknown>)?.status as string,
+      status: data.data?.credit_operation_status,
+      contractUrl: data.data?.contract?.contract_url,
       rawResponse: data as unknown as Record<string, unknown>,
     };
   }
@@ -171,8 +236,28 @@ export class QITechProvider {
   }
 
   /**
+   * Cancel a debt operation before disbursement
+   */
+  async cancelDebt(debtKey: string): Promise<void> {
+    await this.signedRequest('POST', `/debt/${debtKey}/cancel`, {});
+    logger.info({ debtKey }, 'QI Tech debt cancelled');
+  }
+
+  /**
+   * Health check — verify API connectivity and auth
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await this.signedRequest('GET', `/test/${this.clientKey}`);
+      const data = response as { ping?: string };
+      return data.ping === 'pong';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Process QI Tech webhook
-   * Verify the JWS signature and extract the payload
    */
   static parseWebhook(payload: unknown): QITechWebhookPayload | null {
     try {
@@ -187,39 +272,57 @@ export class QITechProvider {
   }
 
   private buildDebtPayload(params: DisbursementRequest): Record<string, unknown> {
+    const borrower: Record<string, unknown> = {
+      person_type: 'natural',
+      name: params.borrowerName,
+      individual_document_number: params.borrowerCpf,
+      phone: this.parsePhone(params.borrowerPhone),
+      email: params.borrowerEmail,
+      birth_date: params.borrowerBirthDate,
+      mother_name: params.borrowerMotherName || 'Não informado',
+      nationality: params.borrowerNationality || 'brasileiro',
+      is_pep: false,
+      role_type: 'issuer',
+    };
+
+    // Address is required by QI Tech
+    if (params.borrowerAddress) {
+      borrower.address = {
+        street: params.borrowerAddress.street,
+        number: params.borrowerAddress.number,
+        complement: params.borrowerAddress.complement || '',
+        neighborhood: params.borrowerAddress.neighborhood,
+        city: params.borrowerAddress.city,
+        state: params.borrowerAddress.state,
+        postal_code: params.borrowerAddress.postalCode,
+      };
+    }
+
     return {
-      borrower: {
-        person_type: 'natural',
-        name: params.borrowerName,
-        document_number: params.borrowerCpf,
-        phone: this.parsePhone(params.borrowerPhone),
-        email: params.borrowerEmail,
-        birth_date: params.borrowerBirthDate,
-        mother_name: params.borrowerMotherName || null,
-      },
+      borrower,
       financial: {
         amount: params.amount,
-        interest_type: 'pre_price',
+        interest_type: 'pre_price_days',
         credit_operation_type: 'ccb', // Cédula de Crédito Bancário
         annual_interest_rate: this.monthlyToAnnualRate(params.interestRateMonthly),
         disbursement_date: new Date().toISOString().split('T')[0],
         interest_grace_period: 0,
         principal_grace_period: 0,
         number_of_installments: params.installments,
-        rebate: null,
         fine_configuration: {
-          monthly_rate: 0.02, // 2% fine
+          monthly_rate: 0.01, // 1% monthly late interest
           interest_base: 'calendar_days',
-          contract_fine_rate: 0.02,
+          contract_fine_rate: 0.02, // 2% fine
         },
       },
-      disbursement_accounts: [
+      disbursement_bank_accounts: [
         {
           account_type: 'pix',
           pix_key: params.disbursementPixKey,
           pix_key_type: params.disbursementPixKeyType,
           name: params.borrowerName,
           document_number: params.borrowerCpf,
+          percentage_receivable: 100,
         },
       ],
       external_contract_number: params.contractNumber,
@@ -258,13 +361,32 @@ export class QITechProvider {
   }
 
   /**
-   * Sign request with JWS (JSON Web Signature)
-   * QI Tech uses JWT where the body is encoded in the payload claim.
+   * Create a signed JWT using ECDSA ES512 (P-521 curve)
+   * QI Tech requires all payloads and auth tokens to be JWT-signed.
+   */
+  private createJwt(payload: Record<string, unknown>): string {
+    const header = Buffer.from(JSON.stringify({
+      alg: 'ES512',
+      typ: 'JWT',
+    })).toString('base64url');
+
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+
+    const signer = crypto.createSign('SHA512');
+    signer.update(`${header}.${encodedPayload}`);
+    const signature = signer.sign(this.privateKey, 'base64url');
+
+    return `${header}.${encodedPayload}.${signature}`;
+  }
+
+  /**
+   * Sign request with QI Tech's dual-JWT authentication
    *
-   * Flow:
-   * 1. Build a JWT with the request body in the payload
-   * 2. Sign with RS256 (RSA-SHA256) using the private key
-   * 3. Send the JWS as the request body (POST) or Authorization (GET)
+   * QI Tech auth flow:
+   * 1. Encode request body as JWT (encoded_body) — only for POST/PATCH/PUT
+   * 2. Create Authorization JWT with metadata (method, uri, body hash)
+   * 3. Authorization header: "QIT {client_key}:{auth_jwt}"
+   * 4. Body: {"encoded_body": "<body_jwt>"}
    */
   private async signedRequest(
     method: string,
@@ -272,40 +394,42 @@ export class QITechProvider {
     body?: Record<string, unknown>,
   ): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    const now = Math.floor(Date.now() / 1000);
 
-    // Build JWS header
-    const header = Buffer.from(JSON.stringify({
-      alg: 'RS256',
-      typ: 'JWT',
-    })).toString('base64url');
+    // Step 1: Encode body as JWT (for POST/PATCH/PUT)
+    let encodedBody: string | undefined;
+    if (body && method !== 'GET') {
+      encodedBody = this.createJwt(body);
+    }
 
-    // Build JWS payload — body goes inside the payload as a claim
-    const payload = Buffer.from(JSON.stringify({
+    // Step 2: Build Authorization JWT
+    const authPayload: Record<string, unknown> = {
       sub: this.clientKey,
-      iat: now,
-      exp: now + 300, // 5 minute expiry
-      ...(body || {}),
-    })).toString('base64url');
+      method: method.toUpperCase(),
+      uri: path,
+      iat: Math.floor(Date.now() / 1000),
+    };
 
-    // Single RS256 signature over header.payload
-    const signer = crypto.createSign('RSA-SHA256');
-    signer.update(`${header}.${payload}`);
-    const signature = signer.sign(this.privateKey, 'base64url');
-    const jws = `${header}.${payload}.${signature}`;
+    // Include MD5 hash of encoded body for integrity verification
+    if (encodedBody) {
+      authPayload.signature_hash = crypto
+        .createHash('md5')
+        .update(encodedBody)
+        .digest('hex');
+    }
+
+    const authJwt = this.createJwt(authPayload);
 
     const options: RequestInit = {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${jws}`,
+        'Authorization': `QIT ${this.clientKey}:${authJwt}`,
         'API-CLIENT-KEY': this.clientKey,
       },
     };
 
-    if (body && method !== 'GET') {
-      // QI Tech expects the encoded body as JWS in the POST body
-      options.body = JSON.stringify({ encoded_body: jws });
+    if (encodedBody) {
+      options.body = JSON.stringify({ encoded_body: encodedBody });
     }
 
     const response = await fetch(url, options);
@@ -314,6 +438,11 @@ export class QITechProvider {
       const errorText = await response.text();
       logger.error({ status: response.status, path, error: errorText }, 'QI Tech API error');
       throw new Error(`QI Tech API error ${response.status}: ${errorText}`);
+    }
+
+    if (response.status === 201 || response.status === 204) {
+      const text = await response.text();
+      return text ? JSON.parse(text) : {};
     }
 
     return response.json();
