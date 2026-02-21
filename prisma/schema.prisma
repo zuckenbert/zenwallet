@@ -21,7 +21,16 @@ model Lead {
   
   stage       LeadStage @default(NEW)
   source      String    @default("whatsapp")
-  
+
+  // LGPD consent
+  consentGivenAt  DateTime?
+  consentIp       String?
+
+  // KYC verification
+  kycVerified     Boolean   @default(false)
+  kycVerifiedAt   DateTime?
+  kycVerificationId String?
+
   applications  Application[]
   conversations Conversation[]
   documents     Document[]
@@ -199,16 +208,23 @@ model Contract {
   id              String   @id @default(uuid())
   applicationId   String   @unique
   application     Application @relation(fields: [applicationId], references: [id])
-  
+
   contractNumber  String   @unique
   terms           Json
-  
+
   signedAt        DateTime?
   signatureHash   String?
   signatureIp     String?
-  
+
+  // Clicksign integration
+  clicksignDocumentKey  String?  @unique
+  clicksignSigningUrl   String?
+
+  // QI Tech funding integration
+  qitechOperationKey    String?  @unique
+
   status          ContractStatus @default(DRAFT)
-  
+
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

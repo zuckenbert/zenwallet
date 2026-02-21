@@ -13,8 +13,20 @@ export const agentTools: Tool[] = [
     },
   },
   {
+    name: 'request_lgpd_consent',
+    description: 'Registra o consentimento LGPD do cliente. OBRIGATÓRIO antes de coletar CPF ou dados pessoais. Use quando o cliente concordar com o tratamento de dados.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        phone: { type: 'string', description: 'Telefone do lead' },
+        granted: { type: 'boolean', description: 'Se o cliente concedeu consentimento (true) ou recusou (false)' },
+      },
+      required: ['phone', 'granted'],
+    },
+  },
+  {
     name: 'update_lead',
-    description: 'Atualiza dados do lead (nome, CPF, email, renda, empregador, etc). Use quando o cliente fornecer informações pessoais.',
+    description: 'Atualiza dados do lead (nome, CPF, email, renda, empregador, etc). Use quando o cliente fornecer informações pessoais. Requer consentimento LGPD prévio.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -102,7 +114,7 @@ export const agentTools: Tool[] = [
   },
   {
     name: 'generate_contract',
-    description: 'Gera o contrato de empréstimo para assinatura digital. Use após aprovação da análise de crédito.',
+    description: 'Gera o contrato de empréstimo para assinatura digital via Clicksign. Use após aprovação da análise de crédito. O link de assinatura será enviado automaticamente ao cliente.',
     input_schema: {
       type: 'object' as const,
       properties: {

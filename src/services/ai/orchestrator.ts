@@ -92,6 +92,7 @@ class ConversationOrchestrator {
       const context = {
         leadName: lead.name || undefined,
         leadStage: lead.stage,
+        consentGiven: !!lead.consentGivenAt,
         hasApplication: lead.applications.length > 0,
         applicationStatus: lead.applications[0]?.status,
         pendingDocuments: pendingDocs.map((d) => docLabels[d] || d),

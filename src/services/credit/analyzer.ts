@@ -3,6 +3,7 @@ import { logger } from '../../config/logger';
 import { env } from '../../config/env';
 import { CreditCheckResult } from '../../types';
 import { CreditDecision, FraudRisk } from '@prisma/client';
+import { BigDataCorpProvider } from './bigdata-provider';
 
 interface BureauProvider {
   name: string;
@@ -34,19 +35,24 @@ class MockSerasaProvider implements BureauProvider {
 }
 
 /**
- * Real Serasa provider stub - implement when you have API access
+ * BigDataCorp provider adapter - wraps the BigDataCorp API client
+ * into the BureauProvider interface used by the analyzer
  */
-class SerasaProvider implements BureauProvider {
-  name = 'serasa';
+class BigDataBureauAdapter implements BureauProvider {
+  name = 'bigdatacorp';
+  private client: BigDataCorpProvider;
+
+  constructor() {
+    this.client = new BigDataCorpProvider();
+  }
 
   async checkCredit(cpf: string): Promise<{ score: number; fraudRisk: FraudRisk; existingDebts: number }> {
-    // TODO: Implement real Serasa API call
-    // const response = await fetch(`${env.SERASA_API_URL}/score`, {
-    //   method: 'POST',
-    //   headers: { Authorization: `Bearer ${env.SERASA_API_KEY}` },
-    //   body: JSON.stringify({ cpf }),
-    // });
-    throw new Error('Serasa provider not yet implemented. Set SERASA_ENABLED=false to use mock.');
+    const result = await this.client.checkCredit(cpf);
+    return {
+      score: result.score,
+      fraudRisk: result.fraudRisk,
+      existingDebts: result.existingDebts,
+    };
   }
 }
 
@@ -54,7 +60,12 @@ class CreditAnalyzer {
   private provider: BureauProvider;
 
   constructor() {
-    this.provider = env.SERASA_ENABLED ? new SerasaProvider() : new MockSerasaProvider();
+    if (env.BIGDATA_ENABLED) {
+      this.provider = new BigDataBureauAdapter();
+    } else {
+      this.provider = new MockSerasaProvider();
+    }
+    logger.info({ provider: this.provider.name }, 'Credit analyzer initialized');
   }
 
   async analyze(phone: string, applicationId: string): Promise<CreditCheckResult> {

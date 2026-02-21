@@ -16,6 +16,8 @@ export async function handleToolCall(name: string, input: ToolInput): Promise<AI
     switch (name) {
       case 'get_lead_info':
         return await getLeadInfo(input);
+      case 'request_lgpd_consent':
+        return await requestLgpdConsent(input);
       case 'update_lead':
         return await updateLead(input);
       case 'simulate_loan':
@@ -71,6 +73,8 @@ async function getLeadInfo(input: ToolInput): Promise<AIToolResult> {
       employmentType: lead.employmentType,
       stage: lead.stage,
       documentsCount: lead.documents.length,
+      consentGiven: !!lead.consentGivenAt,
+      kycVerified: lead.kycVerified,
       hasActiveApplication: lead.applications.length > 0,
       lastApplication: lead.applications[0] ? {
         id: lead.applications[0].id,
@@ -81,8 +85,64 @@ async function getLeadInfo(input: ToolInput): Promise<AIToolResult> {
   };
 }
 
+async function requestLgpdConsent(input: ToolInput): Promise<AIToolResult> {
+  const phone = normalizePhone(String(input.phone));
+  const granted = input.granted === true;
+
+  if (!granted) {
+    return {
+      content: JSON.stringify({
+        success: true,
+        consentGranted: false,
+        message: 'Cliente recusou o consentimento LGPD. Não é possível prosseguir com a coleta de dados pessoais.',
+      }),
+    };
+  }
+
+  const lead = await prisma.lead.upsert({
+    where: { phone },
+    update: {
+      consentGivenAt: new Date(),
+      consentIp: 'whatsapp',
+    },
+    create: {
+      phone,
+      consentGivenAt: new Date(),
+      consentIp: 'whatsapp',
+      stage: 'QUALIFYING',
+    },
+  });
+
+  logger.info({ phone, leadId: lead.id }, 'LGPD consent registered');
+
+  return {
+    content: JSON.stringify({
+      success: true,
+      consentGranted: true,
+      consentedAt: lead.consentGivenAt,
+      message: 'Consentimento LGPD registrado com sucesso. Pode prosseguir com a coleta de dados.',
+    }),
+  };
+}
+
 async function updateLead(input: ToolInput): Promise<AIToolResult> {
   const phone = normalizePhone(String(input.phone));
+
+  // Check LGPD consent for sensitive data (CPF, income, birthDate)
+  const hasSensitiveData = input.cpf || input.monthlyIncome || input.birthDate || input.email;
+  if (hasSensitiveData) {
+    const existingLead = await prisma.lead.findUnique({ where: { phone } });
+    if (!existingLead?.consentGivenAt) {
+      return {
+        content: JSON.stringify({
+          success: false,
+          errors: ['Consentimento LGPD não registrado. Solicite o consentimento do cliente antes de coletar dados pessoais.'],
+        }),
+        isError: true,
+      };
+    }
+  }
+
   const updateData: Record<string, unknown> = {};
   const errors: string[] = [];
 
