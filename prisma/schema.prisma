@@ -1,0 +1,266 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===== Lead / Customer =====
+model Lead {
+  id          String   @id @default(uuid())
+  phone       String   @unique
+  name        String?
+  cpf         String?  @unique
+  email       String?
+  birthDate   DateTime?
+  monthlyIncome Decimal?
+  employerName  String?
+  employmentType EmploymentType?
+  
+  stage       LeadStage @default(NEW)
+  source      String    @default("whatsapp")
+  
+  applications  Application[]
+  conversations Conversation[]
+  documents     Document[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([phone])
+  @@index([cpf])
+  @@index([stage])
+}
+
+enum LeadStage {
+  NEW
+  QUALIFYING
+  SIMULATING
+  DOCUMENTS_PENDING
+  ANALYZING
+  APPROVED
+  DENIED
+  CONTRACT_SENT
+  CONTRACT_SIGNED
+  DISBURSED
+  COMPLETED
+  CANCELLED
+}
+
+enum EmploymentType {
+  CLT
+  PUBLIC_SERVANT
+  SELF_EMPLOYED
+  BUSINESS_OWNER
+  RETIRED
+  OTHER
+}
+
+// ===== Loan Application =====
+model Application {
+  id              String   @id @default(uuid())
+  leadId          String
+  lead            Lead     @relation(fields: [leadId], references: [id])
+  
+  requestedAmount Decimal
+  approvedAmount  Decimal?
+  installments    Int
+  interestRate    Decimal?
+  monthlyPayment  Decimal?
+  totalAmount     Decimal?
+  
+  purpose         LoanPurpose?
+  status          ApplicationStatus @default(DRAFT)
+  
+  creditAnalysis  CreditAnalysis?
+  contract        Contract?
+  
+  denialReason    String?
+  notes           String?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([status])
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SIMULATED
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  DENIED
+  CONTRACT_PENDING
+  CONTRACT_SIGNED
+  DISBURSEMENT_PENDING
+  DISBURSED
+  CANCELLED
+}
+
+enum LoanPurpose {
+  DEBT_CONSOLIDATION
+  HOME_IMPROVEMENT
+  MEDICAL
+  EDUCATION
+  VEHICLE
+  TRAVEL
+  BUSINESS
+  OTHER
+}
+
+// ===== Credit Analysis =====
+model CreditAnalysis {
+  id              String   @id @default(uuid())
+  applicationId   String   @unique
+  application     Application @relation(fields: [applicationId], references: [id])
+  
+  creditScore     Int?
+  scoreProvider   String?
+  fraudRisk       FraudRisk @default(UNKNOWN)
+  incomeVerified  Boolean  @default(false)
+  
+  debtToIncome    Decimal?
+  existingDebts   Decimal?
+  
+  decision        CreditDecision @default(PENDING)
+  decisionReason  String?
+  
+  rawResponse     Json?
+  
+  analyzedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([applicationId])
+}
+
+enum CreditDecision {
+  PENDING
+  APPROVED
+  DENIED
+  MANUAL_REVIEW
+}
+
+enum FraudRisk {
+  LOW
+  MEDIUM
+  HIGH
+  UNKNOWN
+}
+
+// ===== Documents =====
+model Document {
+  id          String   @id @default(uuid())
+  leadId      String
+  lead        Lead     @relation(fields: [leadId], references: [id])
+  
+  type        DocumentType
+  fileName    String
+  filePath    String
+  mimeType    String
+  fileSize    Int
+  
+  status      DocumentStatus @default(PENDING)
+  ocrData     Json?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([type])
+}
+
+enum DocumentType {
+  RG_FRONT
+  RG_BACK
+  CPF
+  CNH
+  PROOF_OF_INCOME
+  PROOF_OF_ADDRESS
+  SELFIE
+  BANK_STATEMENT
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+// ===== Contract =====
+model Contract {
+  id              String   @id @default(uuid())
+  applicationId   String   @unique
+  application     Application @relation(fields: [applicationId], references: [id])
+  
+  contractNumber  String   @unique
+  terms           Json
+  
+  signedAt        DateTime?
+  signatureHash   String?
+  signatureIp     String?
+  
+  status          ContractStatus @default(DRAFT)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([applicationId])
+  @@index([contractNumber])
+}
+
+enum ContractStatus {
+  DRAFT
+  SENT
+  VIEWED
+  SIGNED
+  CANCELLED
+}
+
+// ===== Conversation History =====
+model Conversation {
+  id        String   @id @default(uuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  
+  messages  Message[]
+  
+  aiContext  Json?
+  active    Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+}
+
+model Message {
+  id              String   @id @default(uuid())
+  conversationId  String
+  conversation    Conversation @relation(fields: [conversationId], references: [id])
+  
+  role            MessageRole
+  content         String
+  mediaUrl        String?
+  mediaType       String?
+  
+  whatsappMsgId   String?
+  
+  createdAt       DateTime @default(now())
+
+  @@index([conversationId])
+  @@index([whatsappMsgId])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}

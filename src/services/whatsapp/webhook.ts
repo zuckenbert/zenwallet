@@ -1,0 +1,107 @@
+import { Request, Response, Router } from 'express';
+import { logger } from '../../config/logger';
+import { conversationOrchestrator } from '../ai/orchestrator';
+
+export const whatsappWebhookRouter = Router();
+
+interface EvolutionWebhookPayload {
+  event: string;
+  instance: string;
+  data: {
+    key: {
+      remoteJid: string;
+      fromMe: boolean;
+      id: string;
+    };
+    pushName?: string;
+    message?: {
+      conversation?: string;
+      extendedTextMessage?: { text: string };
+      imageMessage?: { url: string; caption?: string; mimetype: string };
+      documentMessage?: { url: string; fileName: string; mimetype: string };
+      audioMessage?: { url: string; mimetype: string };
+      buttonsResponseMessage?: { selectedButtonId: string };
+      listResponseMessage?: { singleSelectReply: { selectedRowId: string } };
+    };
+    messageType?: string;
+  };
+}
+
+function extractMessageContent(payload: EvolutionWebhookPayload): {
+  text: string;
+  mediaUrl?: string;
+  mediaType?: string;
+} | null {
+  const msg = payload.data.message;
+  if (!msg) return null;
+
+  if (msg.conversation) {
+    return { text: msg.conversation };
+  }
+  if (msg.extendedTextMessage?.text) {
+    return { text: msg.extendedTextMessage.text };
+  }
+  if (msg.buttonsResponseMessage?.selectedButtonId) {
+    return { text: msg.buttonsResponseMessage.selectedButtonId };
+  }
+  if (msg.listResponseMessage?.singleSelectReply?.selectedRowId) {
+    return { text: msg.listResponseMessage.singleSelectReply.selectedRowId };
+  }
+  if (msg.imageMessage) {
+    return {
+      text: msg.imageMessage.caption || '[imagem]',
+      mediaUrl: msg.imageMessage.url,
+      mediaType: msg.imageMessage.mimetype,
+    };
+  }
+  if (msg.documentMessage) {
+    return {
+      text: `[documento: ${msg.documentMessage.fileName}]`,
+      mediaUrl: msg.documentMessage.url,
+      mediaType: msg.documentMessage.mimetype,
+    };
+  }
+
+  return null;
+}
+
+function extractPhone(remoteJid: string): string {
+  return remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+}
+
+whatsappWebhookRouter.post('/webhook/whatsapp', async (req: Request, res: Response) => {
+  const payload = req.body as EvolutionWebhookPayload;
+
+  // Respond immediately to avoid timeouts
+  res.status(200).json({ status: 'received' });
+
+  try {
+    // Only process incoming messages (not our own)
+    if (payload.event !== 'messages.upsert' || payload.data.key.fromMe) {
+      return;
+    }
+
+    const content = extractMessageContent(payload);
+    if (!content) {
+      logger.debug({ payload }, 'Unhandled message type');
+      return;
+    }
+
+    const phone = extractPhone(payload.data.key.remoteJid);
+    const name = payload.data.pushName || undefined;
+    const whatsappMsgId = payload.data.key.id;
+
+    logger.info({ phone, text: content.text.substring(0, 50) }, 'Incoming WhatsApp message');
+
+    await conversationOrchestrator.handleIncomingMessage({
+      phone,
+      name,
+      text: content.text,
+      mediaUrl: content.mediaUrl,
+      mediaType: content.mediaType,
+      whatsappMsgId,
+    });
+  } catch (error) {
+    logger.error({ error, payload }, 'Error processing WhatsApp webhook');
+  }
+});

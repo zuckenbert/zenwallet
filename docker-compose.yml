@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # ===== PostgreSQL =====
+  postgres:
+    image: postgres:16-alpine
+    container_name: zenwallet-db
+    environment:
+      POSTGRES_USER: zenwallet
+      POSTGRES_PASSWORD: zenwallet
+      POSTGRES_DB: zenwallet
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U zenwallet']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ===== Redis =====
+  redis:
+    image: redis:7-alpine
+    container_name: zenwallet-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ===== Evolution API (WhatsApp) =====
+  evolution-api:
+    image: atendai/evolution-api:latest
+    container_name: zenwallet-whatsapp
+    environment:
+      - SERVER_URL=http://localhost:8080
+      - AUTHENTICATION_API_KEY=zenwallet-evolution-key
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://zenwallet:zenwallet@postgres:5432/evolution?schema=public
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://redis:6379
+    ports:
+      - '8080:8080'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===== ZenWallet App =====
+  app:
+    build: .
+    container_name: zenwallet-app
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://zenwallet:zenwallet@postgres:5432/zenwallet?schema=public
+      - REDIS_URL=redis://redis:6379
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=zenwallet-evolution-key
+      - EVOLUTION_INSTANCE_NAME=zenwallet
+    env_file:
+      - .env
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+
+volumes:
+  postgres_data:
+  uploads:
