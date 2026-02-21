@@ -1,46 +1,48 @@
 import { env } from '../../config/env';
 import { LoanSimulation } from '../../types';
 
+const MIN_RATE = 0.0099; // 0.99% monthly floor
+
 class LoanEngine {
   simulate(amount: number, installments: number, monthlyIncome?: number): LoanSimulation {
-    // Validate bounds
     const clampedAmount = Math.max(env.MIN_LOAN_AMOUNT, Math.min(env.MAX_LOAN_AMOUNT, amount));
     const clampedInstallments = Math.max(env.MIN_INSTALLMENTS, Math.min(env.MAX_INSTALLMENTS, installments));
 
-    // Calculate personalized rate based on profile
-    const baseRate = env.BASE_INTEREST_RATE / 100; // Monthly rate
+    const baseRate = env.BASE_INTEREST_RATE / 100;
     let rate = baseRate;
 
-    // Risk-based pricing: adjust rate based on income and amount
+    // Risk-based pricing adjustments
     if (monthlyIncome) {
       const commitmentRatio = clampedAmount / (monthlyIncome * clampedInstallments);
-      if (commitmentRatio > 0.5) rate += 0.005; // +0.5% for high commitment
-      if (commitmentRatio < 0.2) rate -= 0.003; // -0.3% for low commitment
-      if (monthlyIncome > 10000) rate -= 0.002; // -0.2% for higher income
+      if (commitmentRatio > 0.5) rate += 0.005;
+      if (commitmentRatio < 0.2) rate -= 0.003;
+      if (monthlyIncome > 10000) rate -= 0.002;
     }
 
-    // Longer terms get slightly higher rates
     if (clampedInstallments > 24) rate += 0.003;
     if (clampedInstallments > 36) rate += 0.002;
 
-    // Price formula (PMT calculation)
+    // Floor: never go below minimum rate
+    rate = Math.max(MIN_RATE, rate);
+
+    // PMT calculation
     const monthlyPayment = this.calculatePMT(clampedAmount, rate, clampedInstallments);
     const totalAmount = monthlyPayment * clampedInstallments;
     const totalInterest = totalAmount - clampedAmount;
 
     // IOF (Imposto sobre Operações Financeiras)
-    // Simplified: 0.38% flat + 0.0082% per day
+    // Simplified: 0.38% flat + 0.0082% per day (capped at 365 days)
     const avgDays = (clampedInstallments * 30) / 2;
     const iof = clampedAmount * 0.0038 + clampedAmount * 0.000082 * Math.min(avgDays, 365);
 
-    // CET (Custo Efetivo Total) - annualized
+    // CET (Custo Efetivo Total) - annualized, includes IOF spread over installments
     const monthlyEffective = rate + (iof / clampedAmount) / clampedInstallments;
     const cet = (Math.pow(1 + monthlyEffective, 12) - 1) * 100;
 
     return {
       amount: clampedAmount,
       installments: clampedInstallments,
-      interestRate: rate * 100, // back to percentage
+      interestRate: Math.round(rate * 10000) / 100, // percentage with 2 decimals
       monthlyPayment: Math.round(monthlyPayment * 100) / 100,
       totalAmount: Math.round(totalAmount * 100) / 100,
       totalInterest: Math.round(totalInterest * 100) / 100,
@@ -49,24 +51,18 @@ class LoanEngine {
     };
   }
 
-  /**
-   * Calculate PMT (monthly payment) using standard financial formula
-   */
   private calculatePMT(principal: number, monthlyRate: number, periods: number): number {
     if (monthlyRate === 0) return principal / periods;
     return (principal * monthlyRate * Math.pow(1 + monthlyRate, periods)) /
       (Math.pow(1 + monthlyRate, periods) - 1);
   }
 
-  /**
-   * Check if monthly payment is within acceptable commitment ratio
-   */
   checkAffordability(monthlyPayment: number, monthlyIncome: number): {
     affordable: boolean;
     commitmentRatio: number;
     maxPayment: number;
   } {
-    const maxCommitment = 0.35; // 35% of income
+    const maxCommitment = 0.35;
     const maxPayment = monthlyIncome * maxCommitment;
     const commitmentRatio = monthlyPayment / monthlyIncome;
 
@@ -77,9 +73,6 @@ class LoanEngine {
     };
   }
 
-  /**
-   * Generate amortization schedule
-   */
   generateSchedule(amount: number, rate: number, installments: number): Array<{
     number: number;
     payment: number;

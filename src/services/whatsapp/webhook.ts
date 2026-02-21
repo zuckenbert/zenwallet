@@ -1,6 +1,8 @@
 import { Request, Response, Router } from 'express';
 import { logger } from '../../config/logger';
+import { env } from '../../config/env';
 import { conversationOrchestrator } from '../ai/orchestrator';
+import { sanitizeInput } from '../../utils/validation';
 
 export const whatsappWebhookRouter = Router();
 
@@ -26,6 +28,19 @@ interface EvolutionWebhookPayload {
     messageType?: string;
   };
 }
+
+// Deduplication: track recently processed message IDs (5 min TTL)
+const processedMessages = new Map<string, number>();
+const DEDUP_TTL_MS = 5 * 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, timestamp] of processedMessages) {
+    if (now - timestamp > DEDUP_TTL_MS) {
+      processedMessages.delete(id);
+    }
+  }
+}, 60_000);
 
 function extractMessageContent(payload: EvolutionWebhookPayload): {
   text: string;
@@ -70,6 +85,14 @@ function extractPhone(remoteJid: string): string {
 }
 
 whatsappWebhookRouter.post('/webhook/whatsapp', async (req: Request, res: Response) => {
+  // Verify webhook origin via API key header
+  const apiKey = req.headers['apikey'] || req.headers['x-api-key'];
+  if (env.EVOLUTION_API_KEY && apiKey !== env.EVOLUTION_API_KEY) {
+    logger.warn({ ip: req.ip }, 'Webhook unauthorized request');
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
   const payload = req.body as EvolutionWebhookPayload;
 
   // Respond immediately to avoid timeouts
@@ -77,31 +100,49 @@ whatsappWebhookRouter.post('/webhook/whatsapp', async (req: Request, res: Respon
 
   try {
     // Only process incoming messages (not our own)
-    if (payload.event !== 'messages.upsert' || payload.data.key.fromMe) {
+    if (payload.event !== 'messages.upsert' || payload.data?.key?.fromMe) {
       return;
     }
 
+    // Deduplication check
+    const msgId = payload.data.key.id;
+    if (processedMessages.has(msgId)) {
+      logger.debug({ msgId }, 'Duplicate message ignored');
+      return;
+    }
+    processedMessages.set(msgId, Date.now());
+
     const content = extractMessageContent(payload);
     if (!content) {
-      logger.debug({ payload }, 'Unhandled message type');
+      logger.debug({ messageType: payload.data.messageType }, 'Unhandled message type');
       return;
     }
 
     const phone = extractPhone(payload.data.key.remoteJid);
-    const name = payload.data.pushName || undefined;
-    const whatsappMsgId = payload.data.key.id;
 
-    logger.info({ phone, text: content.text.substring(0, 50) }, 'Incoming WhatsApp message');
+    // Ignore group messages
+    if (payload.data.key.remoteJid.endsWith('@g.us')) {
+      logger.debug({ phone }, 'Group message ignored');
+      return;
+    }
+
+    const name = payload.data.pushName || undefined;
+    const sanitizedText = sanitizeInput(content.text, 2000);
+
+    logger.info(
+      { phone, text: sanitizedText.substring(0, 50), requestId: req.requestId },
+      'Incoming WhatsApp message',
+    );
 
     await conversationOrchestrator.handleIncomingMessage({
       phone,
       name,
-      text: content.text,
+      text: sanitizedText,
       mediaUrl: content.mediaUrl,
       mediaType: content.mediaType,
-      whatsappMsgId,
+      whatsappMsgId: msgId,
     });
   } catch (error) {
-    logger.error({ error, payload }, 'Error processing WhatsApp webhook');
+    logger.error({ error, event: payload.event, requestId: req.requestId }, 'Error processing WhatsApp webhook');
   }
 });

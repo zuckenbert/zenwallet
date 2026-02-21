@@ -7,7 +7,7 @@ export const simulationRouter = Router();
 const simulationSchema = z.object({
   amount: z.number().min(1000).max(100000),
   installments: z.number().int().min(3).max(48),
-  monthlyIncome: z.number().optional(),
+  monthlyIncome: z.number().positive().optional(),
 });
 
 // Public simulation endpoint

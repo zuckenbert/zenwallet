@@ -7,6 +7,9 @@ import { SYSTEM_PROMPT, buildContextMessage } from './prompt';
 
 const anthropic = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
+const API_TIMEOUT_MS = 30_000;
+const MAX_ITERATIONS = 8;
+
 interface MessageParam {
   role: 'user' | 'assistant';
   content: string | Anthropic.Messages.ContentBlockParam[];
@@ -30,14 +33,13 @@ export class LoanAgent {
     },
   ): Promise<AgentResponse> {
     const toolsUsed: string[] = [];
+    const collectedText: string[] = [];
 
     // Build messages with context
     const messages: MessageParam[] = [...conversationHistory];
 
-    // If we have context, prepend it as a system-like user message at the start
     if (context && Object.keys(context).length > 0) {
       const contextMsg = buildContextMessage(context);
-      // Add context as part of the current user message
       messages.push({
         role: 'user',
         content: `${contextMsg}\n\n${userMessage}`,
@@ -46,20 +48,11 @@ export class LoanAgent {
       messages.push({ role: 'user', content: userMessage });
     }
 
-    // Agentic loop - keep running until we get a final text response
     let currentMessages = messages;
-    const maxIterations = 10;
 
-    for (let i = 0; i < maxIterations; i++) {
-      const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        tools: agentTools,
-        messages: currentMessages,
-      });
+    for (let i = 0; i < MAX_ITERATIONS; i++) {
+      const response = await this.callWithTimeout(currentMessages);
 
-      // Check if we need to handle tool calls
       const toolUseBlocks = response.content.filter(
         (block): block is Anthropic.Messages.ToolUseBlock => block.type === 'tool_use',
       );
@@ -67,17 +60,24 @@ export class LoanAgent {
         (block): block is Anthropic.Messages.TextBlock => block.type === 'text',
       );
 
-      if (toolUseBlocks.length === 0) {
-        // No tool calls - return the text response
-        const text = textBlocks.map((b) => b.text).join('\n');
-        return { text, toolsUsed };
+      // Collect any text from this turn
+      if (textBlocks.length > 0) {
+        collectedText.push(...textBlocks.map((b) => b.text));
+      }
+
+      // If no tool calls, we're done
+      if (toolUseBlocks.length === 0 || response.stop_reason === 'end_turn') {
+        if (collectedText.length === 0) {
+          return { text: 'Desculpe, não consegui processar. Pode repetir?', toolsUsed };
+        }
+        return { text: collectedText.join('\n'), toolsUsed };
       }
 
       // Process tool calls
       const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
 
       for (const toolUse of toolUseBlocks) {
-        logger.info({ tool: toolUse.name, input: toolUse.input }, 'Executing tool');
+        logger.info({ tool: toolUse.name, iteration: i }, 'Executing tool');
         toolsUsed.push(toolUse.name);
 
         const result = await handleToolCall(toolUse.name, toolUse.input as Record<string, unknown>);
@@ -90,23 +90,45 @@ export class LoanAgent {
         });
       }
 
-      // Add assistant response and tool results to continue the conversation
+      // Continue the conversation with tool results
       currentMessages = [
         ...currentMessages,
         { role: 'assistant', content: response.content as Anthropic.Messages.ContentBlockParam[] },
         { role: 'user', content: toolResults as Anthropic.Messages.ContentBlockParam[] },
       ];
-
-      // If stop reason is end_turn and we have text, return it
-      if (response.stop_reason === 'end_turn' && textBlocks.length > 0) {
-        const text = textBlocks.map((b) => b.text).join('\n');
-        return { text, toolsUsed };
-      }
     }
 
-    logger.warn('Agent reached max iterations');
+    logger.warn({ toolsUsed }, 'Agent reached max iterations');
+    if (collectedText.length > 0) {
+      return { text: collectedText.join('\n'), toolsUsed };
+    }
     return { text: 'Desculpe, tive um problema processando sua solicitação. Pode tentar novamente?', toolsUsed };
   }
+
+  private async callWithTimeout(
+    messages: MessageParam[],
+  ): Promise<Anthropic.Messages.Message> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+    try {
+      return await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        tools: agentTools,
+        messages: currentMessagesToApiFormat(messages),
+      }, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function currentMessagesToApiFormat(
+  messages: MessageParam[],
+): Anthropic.Messages.MessageParam[] {
+  return messages as Anthropic.Messages.MessageParam[];
 }
 
 export const loanAgent = new LoanAgent();

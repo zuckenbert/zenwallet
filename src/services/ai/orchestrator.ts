@@ -5,8 +5,28 @@ import { whatsappClient } from '../whatsapp/client';
 import { IncomingMessage } from '../../types';
 import { DocumentType } from '@prisma/client';
 
+// Per-phone concurrency lock to prevent race conditions with simultaneous messages
+const activeLocks = new Map<string, Promise<void>>();
+
 class ConversationOrchestrator {
   async handleIncomingMessage(message: IncomingMessage): Promise<void> {
+    const { phone } = message;
+
+    // Acquire per-phone lock: queue messages sequentially per user
+    const existingLock = activeLocks.get(phone) || Promise.resolve();
+    const currentLock = existingLock.then(() => this.processMessage(message)).catch(() => {});
+    activeLocks.set(phone, currentLock);
+
+    try {
+      await currentLock;
+    } finally {
+      if (activeLocks.get(phone) === currentLock) {
+        activeLocks.delete(phone);
+      }
+    }
+  }
+
+  private async processMessage(message: IncomingMessage): Promise<void> {
     const { phone, name, text, mediaUrl, mediaType, whatsappMsgId } = message;
 
     try {
@@ -48,11 +68,13 @@ class ConversationOrchestrator {
         },
       });
 
-      // 4. Build conversation history for Claude
-      const history = conversation.messages.map((msg) => ({
-        role: msg.role === 'USER' ? 'user' as const : 'assistant' as const,
-        content: msg.content,
-      }));
+      // 4. Build conversation history for Claude (filter out SYSTEM messages)
+      const history = conversation.messages
+        .filter((msg) => msg.role !== 'SYSTEM')
+        .map((msg) => ({
+          role: msg.role === 'USER' ? 'user' as const : 'assistant' as const,
+          content: msg.content,
+        }));
 
       // 5. Build context
       const requiredDocs: DocumentType[] = ['RG_FRONT', 'RG_BACK', 'PROOF_OF_INCOME', 'PROOF_OF_ADDRESS', 'SELFIE'];
@@ -93,11 +115,9 @@ class ConversationOrchestrator {
       });
 
       // 8. Send response via WhatsApp
-      // Split long messages (WhatsApp has ~4096 char limit)
       const chunks = this.splitMessage(response.text, 4000);
       for (const chunk of chunks) {
         await whatsappClient.sendText({ to: phone, text: chunk });
-        // Small delay between messages to maintain order
         if (chunks.length > 1) {
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
@@ -105,11 +125,10 @@ class ConversationOrchestrator {
     } catch (error) {
       logger.error({ error, phone }, 'Error in conversation orchestrator');
 
-      // Send error message to user
       try {
         await whatsappClient.sendText({
           to: phone,
-          text: 'Desculpe, estou com um problema técnico. Pode tentar novamente em alguns instantes? 🙏',
+          text: 'Desculpe, estou com um problema técnico. Pode tentar novamente em alguns instantes?',
         });
       } catch {
         logger.error({ phone }, 'Failed to send error message');
@@ -129,14 +148,11 @@ class ConversationOrchestrator {
         break;
       }
 
-      // Try to split at a paragraph break
       let splitIndex = remaining.lastIndexOf('\n\n', maxLength);
       if (splitIndex === -1 || splitIndex < maxLength * 0.3) {
-        // Try single newline
         splitIndex = remaining.lastIndexOf('\n', maxLength);
       }
       if (splitIndex === -1 || splitIndex < maxLength * 0.3) {
-        // Try space
         splitIndex = remaining.lastIndexOf(' ', maxLength);
       }
       if (splitIndex === -1) {

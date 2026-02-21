@@ -1,5 +1,6 @@
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
+import { normalizePhone } from '../../utils/validation';
 
 interface SendMessageOptions {
   to: string;
@@ -68,7 +69,7 @@ export class WhatsAppClient {
   }
 
   async sendText({ to, text }: SendMessageOptions): Promise<unknown> {
-    const phone = this.normalizePhone(to);
+    const phone = normalizePhone(to);
     logger.info({ to: phone }, 'Sending WhatsApp text message');
     
     return this.request('message/sendText', {
@@ -78,7 +79,7 @@ export class WhatsAppClient {
   }
 
   async sendMedia({ to, mediaUrl, caption, mediaType }: SendMediaOptions): Promise<unknown> {
-    const phone = this.normalizePhone(to);
+    const phone = normalizePhone(to);
     logger.info({ to: phone, mediaType }, 'Sending WhatsApp media');
 
     return this.request('message/sendMedia', {
@@ -90,7 +91,7 @@ export class WhatsAppClient {
   }
 
   async sendButtons({ to, text, buttons, footer }: SendButtonsOptions): Promise<unknown> {
-    const phone = this.normalizePhone(to);
+    const phone = normalizePhone(to);
     
     return this.request('message/sendButtons', {
       number: phone,
@@ -105,7 +106,7 @@ export class WhatsAppClient {
   }
 
   async sendList({ to, title, description, buttonText, sections }: SendListOptions): Promise<unknown> {
-    const phone = this.normalizePhone(to);
+    const phone = normalizePhone(to);
 
     return this.request('message/sendList', {
       number: phone,
@@ -117,7 +118,7 @@ export class WhatsAppClient {
   }
 
   async sendLocation(to: string, lat: number, lng: number, name?: string): Promise<unknown> {
-    const phone = this.normalizePhone(to);
+    const phone = normalizePhone(to);
     
     return this.request('message/sendLocation', {
       number: phone,
@@ -127,13 +128,6 @@ export class WhatsAppClient {
     });
   }
 
-  private normalizePhone(phone: string): string {
-    let cleaned = phone.replace(/\D/g, '');
-    if (!cleaned.startsWith('55')) {
-      cleaned = '55' + cleaned;
-    }
-    return cleaned;
-  }
 }
 
 export const whatsappClient = new WhatsAppClient();

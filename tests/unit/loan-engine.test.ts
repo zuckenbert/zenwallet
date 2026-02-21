@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-// Direct import of the loan engine logic for testing
-// We test the math independently of the env/prisma dependencies
+// Test the math independently of env/prisma dependencies
 
 function calculatePMT(principal: number, monthlyRate: number, periods: number): number {
   if (monthlyRate === 0) return principal / periods;
@@ -9,15 +8,31 @@ function calculatePMT(principal: number, monthlyRate: number, periods: number): 
     (Math.pow(1 + monthlyRate, periods) - 1);
 }
 
-function simulate(amount: number, installments: number, baseRate = 0.0199) {
-  const monthlyPayment = calculatePMT(amount, baseRate, installments);
+const MIN_RATE = 0.0099;
+
+function simulate(amount: number, installments: number, baseRate = 0.0199, monthlyIncome?: number) {
+  let rate = baseRate;
+
+  if (monthlyIncome) {
+    const commitmentRatio = amount / (monthlyIncome * installments);
+    if (commitmentRatio > 0.5) rate += 0.005;
+    if (commitmentRatio < 0.2) rate -= 0.003;
+    if (monthlyIncome > 10000) rate -= 0.002;
+  }
+
+  if (installments > 24) rate += 0.003;
+  if (installments > 36) rate += 0.002;
+
+  rate = Math.max(MIN_RATE, rate);
+
+  const monthlyPayment = calculatePMT(amount, rate, installments);
   const totalAmount = monthlyPayment * installments;
   const totalInterest = totalAmount - amount;
 
   return {
     amount,
     installments,
-    interestRate: baseRate * 100,
+    interestRate: Math.round(rate * 10000) / 100,
     monthlyPayment: Math.round(monthlyPayment * 100) / 100,
     totalAmount: Math.round(totalAmount * 100) / 100,
     totalInterest: Math.round(totalInterest * 100) / 100,
@@ -30,7 +45,6 @@ describe('Loan Engine', () => {
       const result = simulate(10000, 12);
       expect(result.monthlyPayment).toBeGreaterThan(0);
       expect(result.monthlyPayment).toBeLessThan(10000);
-      // At 1.99% monthly, 12 installments, PMT should be around R$ 945
       expect(result.monthlyPayment).toBeCloseTo(945, -1);
     });
 
@@ -53,6 +67,26 @@ describe('Loan Engine', () => {
     it('should calculate positive interest', () => {
       const result = simulate(20000, 24);
       expect(result.totalInterest).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Rate floor', () => {
+    it('should never produce a rate below minimum', () => {
+      // High income + low amount + short term = maximum discounts
+      const result = simulate(1000, 3, 0.0199, 50000);
+      expect(result.interestRate).toBeGreaterThanOrEqual(0.99);
+    });
+
+    it('should apply risk premium for long terms', () => {
+      const short = simulate(10000, 12);
+      const long = simulate(10000, 48);
+      expect(long.interestRate).toBeGreaterThan(short.interestRate);
+    });
+
+    it('should apply risk premium for high commitment ratio', () => {
+      const low = simulate(5000, 12, 0.0199, 10000);
+      const high = simulate(50000, 12, 0.0199, 5000);
+      expect(high.interestRate).toBeGreaterThan(low.interestRate);
     });
   });
 
