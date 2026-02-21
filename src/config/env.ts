@@ -28,7 +28,13 @@ const envSchema = z.object({
   BIGDATA_API_KEY: z.string().default('mock'),
   BIGDATA_ENABLED: z.coerce.boolean().default(false),
 
-  // KYC - CAF (Combate à Fraude)
+  // KYC - Didit (free 500/month - recommended for MVP)
+  DIDIT_API_KEY: z.string().default('mock'),
+  DIDIT_WORKFLOW_ID: z.string().default(''),
+  DIDIT_WEBHOOK_URL: z.string().default(''),
+  DIDIT_ENABLED: z.coerce.boolean().default(false),
+
+  // KYC - CAF (Combate à Fraude) - alternative for scale
   CAF_API_URL: z.string().default('https://api.sandbox.caf.io/v1'),
   CAF_API_KEY: z.string().default('mock'),
   CAF_ENABLED: z.coerce.boolean().default(false),

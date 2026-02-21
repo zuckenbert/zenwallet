@@ -135,6 +135,17 @@ export const agentTools: Tool[] = [
     },
   },
   {
+    name: 'start_kyc_verification',
+    description: 'Inicia verificação de identidade (KYC) - facematch, liveness, OCR de documento. Envia link para o cliente completar a verificação. Use após coleta de documentos.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        phone: { type: 'string', description: 'Telefone do lead' },
+      },
+      required: ['phone'],
+    },
+  },
+  {
     name: 'update_lead_stage',
     description: 'Atualiza o estágio do lead no funil de originação.',
     input_schema: {

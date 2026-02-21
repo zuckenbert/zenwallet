@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { contractService } from '../../services/contracts/service';
+import { kycService } from '../../services/kyc/service';
 import { ClicksignClient } from '../../services/contracts/clicksign';
 import { QITechProvider } from '../../services/funding/qitech-provider';
+import { DiditProvider } from '../../services/kyc/didit-provider';
 import { logger } from '../../config/logger';
 import { env } from '../../config/env';
 
@@ -72,6 +74,43 @@ webhooksRouter.post('/qitech', async (req: Request, res: Response) => {
     res.json({ received: true });
   } catch (error) {
     logger.error({ error, webhook }, 'QI Tech webhook processing failed');
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+/**
+ * Didit webhook - receives KYC verification results
+ * POST /api/webhooks/didit
+ *
+ * Configure in Didit dashboard (business.didit.me):
+ * URL: https://your-domain.com/api/webhooks/didit
+ */
+webhooksRouter.post('/didit', async (req: Request, res: Response) => {
+  if (!env.DIDIT_ENABLED) {
+    res.status(404).json({ error: 'Didit integration not enabled' });
+    return;
+  }
+
+  const webhook = DiditProvider.parseWebhook(req.body);
+  if (!webhook) {
+    res.status(400).json({ error: 'Invalid webhook payload' });
+    return;
+  }
+
+  logger.info(
+    { sessionId: webhook.sessionId, status: webhook.status },
+    'Didit webhook received',
+  );
+
+  try {
+    await kycService.handleDiditWebhook(
+      webhook.sessionId,
+      webhook.status,
+      webhook.vendorData,
+    );
+    res.json({ received: true });
+  } catch (error) {
+    logger.error({ error, webhook }, 'Didit webhook processing failed');
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });

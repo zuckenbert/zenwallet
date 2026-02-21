@@ -4,6 +4,7 @@ import { loanEngine } from '../credit/loan-engine';
 import { creditAnalyzer } from '../credit/analyzer';
 import { documentService } from '../documents/service';
 import { contractService } from '../contracts/service';
+import { kycService } from '../kyc/service';
 import { AIToolResult } from '../../types';
 import { LeadStage, DocumentType, LoanPurpose } from '@prisma/client';
 import { validateCPF, maskCPF, validateEmail, normalizePhone } from '../../utils/validation';
@@ -34,6 +35,8 @@ export async function handleToolCall(name: string, input: ToolInput): Promise<AI
         return await generateContract(input);
       case 'get_application_status':
         return await getApplicationStatus(input);
+      case 'start_kyc_verification':
+        return await startKycVerification(input);
       case 'update_lead_stage':
         return await updateLeadStage(input);
       default:
@@ -427,6 +430,12 @@ async function getApplicationStatus(input: ToolInput): Promise<AIToolResult> {
       contractStatus: app.contract?.status || null,
     }),
   };
+}
+
+async function startKycVerification(input: ToolInput): Promise<AIToolResult> {
+  const phone = normalizePhone(String(input.phone));
+  const result = await kycService.startVerification(phone);
+  return { content: JSON.stringify(result) };
 }
 
 async function updateLeadStage(input: ToolInput): Promise<AIToolResult> {
