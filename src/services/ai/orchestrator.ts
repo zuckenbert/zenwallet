@@ -6,21 +6,28 @@ import { IncomingMessage } from '../../types';
 import { DocumentType } from '@prisma/client';
 
 // Per-phone concurrency lock to prevent race conditions with simultaneous messages
-const activeLocks = new Map<string, Promise<void>>();
+const activeLocks = new Map<string, { promise: Promise<void>; createdAt: number }>();
+const LOCK_TTL_MS = 2 * 60 * 1000; // 2 minute timeout to prevent deadlocks
 
 class ConversationOrchestrator {
   async handleIncomingMessage(message: IncomingMessage): Promise<void> {
     const { phone } = message;
 
-    // Acquire per-phone lock: queue messages sequentially per user
-    const existingLock = activeLocks.get(phone) || Promise.resolve();
-    const currentLock = existingLock.then(() => this.processMessage(message)).catch(() => {});
-    activeLocks.set(phone, currentLock);
+    // Expire stale locks (prevent deadlock if processing crashed)
+    const existing = activeLocks.get(phone);
+    const now = Date.now();
+    const baseLock = (existing && now - existing.createdAt < LOCK_TTL_MS)
+      ? existing.promise
+      : Promise.resolve();
+
+    // Queue this message after the current lock
+    const currentPromise = baseLock.then(() => this.processMessage(message)).catch(() => {});
+    activeLocks.set(phone, { promise: currentPromise, createdAt: now });
 
     try {
-      await currentLock;
+      await currentPromise;
     } finally {
-      if (activeLocks.get(phone) === currentLock) {
+      if (activeLocks.get(phone)?.promise === currentPromise) {
         activeLocks.delete(phone);
       }
     }

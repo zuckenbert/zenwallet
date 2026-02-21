@@ -192,11 +192,7 @@ export class QITechProvider {
         person_type: 'natural',
         name: params.borrowerName,
         document_number: params.borrowerCpf,
-        phone: {
-          country_code: '055',
-          area_code: params.borrowerPhone.slice(2, 4),
-          number: params.borrowerPhone.slice(4),
-        },
+        phone: this.parsePhone(params.borrowerPhone),
         email: params.borrowerEmail,
         birth_date: params.borrowerBirthDate,
         mother_name: params.borrowerMotherName || null,
@@ -231,6 +227,27 @@ export class QITechProvider {
   }
 
   /**
+   * Parse phone into QI Tech's expected format { country_code, area_code, number }
+   * Handles: +5511999999999, 5511999999999, 11999999999
+   */
+  private parsePhone(phone: string): { country_code: string; area_code: string; number: string } {
+    const digits = phone.replace(/\D/g, '');
+    if (digits.startsWith('55') && digits.length >= 12) {
+      return {
+        country_code: '055',
+        area_code: digits.slice(2, 4),
+        number: digits.slice(4),
+      };
+    }
+    // Assume Brazilian number without country code
+    return {
+      country_code: '055',
+      area_code: digits.slice(0, 2),
+      number: digits.slice(2),
+    };
+  }
+
+  /**
    * Convert monthly interest rate to annual
    * Example: 1.99% monthly → ~26.7% annual
    */
@@ -242,7 +259,12 @@ export class QITechProvider {
 
   /**
    * Sign request with JWS (JSON Web Signature)
-   * QI Tech uses this for authentication
+   * QI Tech uses JWT where the body is encoded in the payload claim.
+   *
+   * Flow:
+   * 1. Build a JWT with the request body in the payload
+   * 2. Sign with RS256 (RSA-SHA256) using the private key
+   * 3. Send the JWS as the request body (POST) or Authorization (GET)
    */
   private async signedRequest(
     method: string,
@@ -250,48 +272,40 @@ export class QITechProvider {
     body?: Record<string, unknown>,
   ): Promise<unknown> {
     const url = `${this.baseUrl}${path}`;
-    const timestamp = new Date().toISOString();
+    const now = Math.floor(Date.now() / 1000);
 
-    // Build the string to sign
-    const contentToSign = body ? JSON.stringify(body) : '';
-    const stringToSign = `${method}\n${path}\n${timestamp}\n${contentToSign}`;
-
-    // Sign with RSA-SHA256
-    const signer = crypto.createSign('RSA-SHA256');
-    signer.update(stringToSign);
-    const signature = signer.sign(this.privateKey, 'base64');
-
-    // Build JWT-like header
+    // Build JWS header
     const header = Buffer.from(JSON.stringify({
       alg: 'RS256',
       typ: 'JWT',
     })).toString('base64url');
 
+    // Build JWS payload — body goes inside the payload as a claim
     const payload = Buffer.from(JSON.stringify({
       sub: this.clientKey,
-      iat: Math.floor(Date.now() / 1000),
-      signature,
-      method,
-      path,
+      iat: now,
+      exp: now + 300, // 5 minute expiry
+      ...(body || {}),
     })).toString('base64url');
 
-    // Sign the JWT
-    const jwtSigner = crypto.createSign('RSA-SHA256');
-    jwtSigner.update(`${header}.${payload}`);
-    const jwtSignature = jwtSigner.sign(this.privateKey, 'base64url');
-    const jwt = `${header}.${payload}.${jwtSignature}`;
+    // Single RS256 signature over header.payload
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(`${header}.${payload}`);
+    const signature = signer.sign(this.privateKey, 'base64url');
+    const jws = `${header}.${payload}.${signature}`;
 
     const options: RequestInit = {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${jwt}`,
+        'Authorization': `Bearer ${jws}`,
         'API-CLIENT-KEY': this.clientKey,
       },
     };
 
     if (body && method !== 'GET') {
-      options.body = JSON.stringify(body);
+      // QI Tech expects the encoded body as JWS in the POST body
+      options.body = JSON.stringify({ encoded_body: jws });
     }
 
     const response = await fetch(url, options);

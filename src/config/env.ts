@@ -32,6 +32,7 @@ const envSchema = z.object({
   DIDIT_API_KEY: z.string().default('mock'),
   DIDIT_WORKFLOW_ID: z.string().default(''),
   DIDIT_WEBHOOK_URL: z.string().default(''),
+  DIDIT_WEBHOOK_SECRET: z.string().default(''),
   DIDIT_ENABLED: z.coerce.boolean().default(false),
 
   // KYC - CAF (Combate à Fraude) - alternative for scale
@@ -42,12 +43,14 @@ const envSchema = z.object({
   // Digital Signature - Clicksign
   CLICKSIGN_API_URL: z.string().default('https://sandbox.clicksign.com/api/v1'),
   CLICKSIGN_API_KEY: z.string().default('mock'),
+  CLICKSIGN_WEBHOOK_SECRET: z.string().default(''),
   CLICKSIGN_ENABLED: z.coerce.boolean().default(false),
 
   // Funding - QI Tech
   QITECH_API_URL: z.string().default('https://api-auth.sandbox.qitech.app'),
   QITECH_CLIENT_KEY: z.string().default('mock'),
   QITECH_PRIVATE_KEY: z.string().default('mock'),
+  QITECH_WEBHOOK_SECRET: z.string().default(''),
   QITECH_ENABLED: z.coerce.boolean().default(false),
 
   // Storage

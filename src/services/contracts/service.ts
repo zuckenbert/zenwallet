@@ -222,7 +222,7 @@ class ContractService {
   async handleQITechWebhook(operationKey: string, status: string): Promise<void> {
     const contract = await prisma.contract.findFirst({
       where: { qitechOperationKey: operationKey },
-      include: { application: true },
+      include: { application: { include: { lead: true } } },
     });
 
     if (!contract) {

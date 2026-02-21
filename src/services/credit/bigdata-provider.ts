@@ -123,7 +123,6 @@ export class BigDataCorpProvider {
       body: JSON.stringify({
         Datasets: dataset,
         q: `doc{${cpf}}`,
-        AccessToken: this.token,
       }),
     });
 

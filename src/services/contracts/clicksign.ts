@@ -147,6 +147,8 @@ export class ClicksignClient {
         auto_close: true,
         locale: 'pt-BR',
         sequence_enabled: false,
+        remind_interval: 3,
+        block_after_refusal: true,
       },
     });
 
@@ -168,6 +170,8 @@ export class ClicksignClient {
         name: params.name,
         email: params.email,
         phone_number: this.formatPhone(params.phone),
+        auths: ['whatsapp'],
+        delivery: 'whatsapp',
         documentation: params.cpf,
         has_documentation: true,
         selfie_enabled: false,
@@ -195,6 +199,7 @@ export class ClicksignClient {
         document_key: documentKey,
         signer_key: signerKey,
         sign_as: signAs,
+        refusable: true,
         message: 'Por favor, assine o contrato de empréstimo da ZenWallet.',
       },
     });

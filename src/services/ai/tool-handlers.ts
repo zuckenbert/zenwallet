@@ -278,6 +278,26 @@ async function createApplication(input: ToolInput): Promise<AIToolResult> {
   const installments = Number(input.installments);
   const purpose = input.purpose as LoanPurpose | undefined;
 
+  if (isNaN(amount) || amount < env.MIN_LOAN_AMOUNT || amount > env.MAX_LOAN_AMOUNT) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: `Valor deve estar entre R$ ${env.MIN_LOAN_AMOUNT.toLocaleString('pt-BR')} e R$ ${env.MAX_LOAN_AMOUNT.toLocaleString('pt-BR')}.`,
+      }),
+      isError: true,
+    };
+  }
+
+  if (isNaN(installments) || installments < env.MIN_INSTALLMENTS || installments > env.MAX_INSTALLMENTS) {
+    return {
+      content: JSON.stringify({
+        success: false,
+        error: `Parcelas devem estar entre ${env.MIN_INSTALLMENTS} e ${env.MAX_INSTALLMENTS}.`,
+      }),
+      isError: true,
+    };
+  }
+
   const lead = await prisma.lead.findUnique({ where: { phone } });
   if (!lead) {
     return { content: JSON.stringify({ success: false, error: 'Lead não encontrado. Colete os dados primeiro.' }), isError: true };
